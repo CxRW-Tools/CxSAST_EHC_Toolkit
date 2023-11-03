@@ -4,9 +4,6 @@ import json
 import argparse
 
 def filter_scans(input_file, project_name):
-    """
-    Reads the JSON file and filters scans based on the given project name.
-    """
     filtered_scans = []
 
     with open(input_file, 'rb') as f:
