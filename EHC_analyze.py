@@ -26,6 +26,7 @@ def process_scans(file_path):
             'Incremental': 0
         }
         scanned_languages = {}
+        origins = {}
         first_date = datetime.max.date()
         last_date = datetime.min.date()
 
@@ -53,6 +54,10 @@ def process_scans(file_path):
             # Increment count for scan type
             if incremental is not None:
                 scan_types['Incremental' if incremental else 'Full'] += 1
+
+            # Process origin
+            origin = scan.get('Origin', 'Unknown')
+            origins[origin] = origins.get(origin, 0) + 1
 
             # LOC count
             if not isinstance(loc, int):
@@ -83,7 +88,7 @@ def process_scans(file_path):
             else:
                 size_bins['10M+'] += 1
 
-    return size_bins, preset_names, scan_types, scanned_languages, first_date, last_date
+        return size_bins, preset_names, scan_types, scanned_languages, origins, first_date, last_date
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
@@ -91,7 +96,7 @@ if __name__ == "__main__":
         sys.exit(1)
     
     file_path = sys.argv[1]
-    size_summary, preset_summary, scan_type_summary, language_summary, first_date, last_date = process_scans(file_path)
+    size_summary, preset_summary, scan_type_summary, language_summary, origins_summary, first_date, last_date = process_scans(file_path)
     
     total_count = scan_type_summary['Full'] + scan_type_summary['Incremental']
     
@@ -104,6 +109,11 @@ if __name__ == "__main__":
         percentage = (scan_count / total_count) * 100
         print(f"- {scan_name}: {format(scan_count, ',')} ({percentage:.1f}%)")
     
+    print("\nOrigin Analysis")
+    for origin, count in origins_summary.items():
+        percentage = (count / total_count) * 100
+        print(f"- {origin}: {format(count, ',')} ({percentage:.1f}%)")
+
     print("\nLOC Analysis")
     for bin_name, bin_count in size_summary.items():
         percentage = (bin_count / total_count) * 100
