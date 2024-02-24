@@ -208,6 +208,7 @@ def process_scans(scans):
             scan_stats_by_date[scan_date]['full_scan_count'] += 1
         
         project_id = scan.get('ProjectId', 0)
+
         if project_id not in scanned_projects:
             scanned_projects[project_id] = {
                 'project_name': scan.get('ProjectName', ""),
@@ -218,7 +219,7 @@ def process_scans(scans):
                 'low_count': 0,
                 'info_count': 0,
             }
-        
+
         scanned_projects[project_id]['project_scan_count'] += 1
         scanned_projects[project_id]['total_vulns_count'] = scan.get('TotalVulnerabilities', 0)
         scanned_projects[project_id]['high_count'] = scan.get('High', 0)
@@ -436,7 +437,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"summary_of_scans.csv")
+            filename = os.path.join(csv_dir, f"01-summary_of_scans.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Description','Value', '%'])
@@ -472,7 +473,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"scan_metrics.csv")
+            filename = os.path.join(csv_dir, f"02-scan_metrics.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Description','Average', 'Max'])
@@ -498,7 +499,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"scan_duration.csv")
+            filename = os.path.join(csv_dir, f"03-scan_duration.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Description','Average', 'Max'])
@@ -527,7 +528,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"scan_results_severity.csv")
+            filename = os.path.join(csv_dir, f"04-scan_results_severity.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Description','Average', 'Max'])
@@ -550,7 +551,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"languages.csv")
+            filename = os.path.join(csv_dir, f"05-languages.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Language','%', 'Scans'])
@@ -574,7 +575,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"scan_submissison_summary.csv")
+            filename = os.path.join(csv_dir, f"06-scan_submissison_summary.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Description','Value'])
@@ -600,7 +601,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"day_of_week_scan_average.csv")
+            filename = os.path.join(csv_dir, f"07-day_of_week_scan_average.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Day of Week', 'Scans', '%'])
@@ -623,7 +624,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"origins.csv")
+            filename = os.path.join(csv_dir, f"08-origins.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Origin', 'Scans', '%'])
@@ -644,7 +645,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"presets.csv")
+            filename = os.path.join(csv_dir, f"09-presets.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Preset', 'Scans', '%'])
@@ -659,7 +660,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Print Scan Time Analysis
     print("\nScan Time Analysis")
     # Print the header of the table
-    print(f"{'LOC Range':<12} {'Scans':<12} {'% Scans':<10} {'Avg Total Time':<18} {'Avg Source Pull':<18} {'Avg Queue':<18} "
+    print(f"{'LOC Range':<12} {'Scans':<12} {'% Scans':<10} {'Avg Total':<18} {'Avg Src Pulling':<18} {'Avg Queue':<18} "
     f"{'Avg Engine':<18}")
     
     # Iterate through the size_bins dictionary to print the per-bin data
@@ -678,10 +679,10 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"scan_time_analysis.csv")
+            filename = os.path.join(csv_dir, f"10-scan_time_analysis.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
-                writer.writerow(['LOC Range','Scans','% Scans','Avg Total Time','Avg Source Pull','Avg Queue','Avg Engine'])
+                writer.writerow(['LOC Range','Scans','% Scans','Avg Total Time','Avg Source Pulling Time','Avg Queue Time','Avg Engine Scan Time'])
                 
                 # Iterate through the size_bins dictionary to print the per-bin data
                 for bin_key, bin_values in data['size_bins'].items():
