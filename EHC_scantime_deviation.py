@@ -110,7 +110,7 @@ def find_deviations(scan_data, min_deviation_time_seconds, deviation_percentage,
 
     return deviations, len(unique_project_ids)
 
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Find deviations in scan times.')
     parser.add_argument('json_file', type=str, help='JSON file containing scan data.')
     parser.add_argument('--min-deviation-percentage', type=int, default=500, help='Deviation percentage threshold.')
@@ -153,6 +153,3 @@ def main():
             print(f"• Project: {deviation['ProjectName']}\n  - Min Scan ID: {deviation['MinScanID']} [Duration: {deviation['MinDuration']}, LOC: {deviation['MinScanLOC']}, EngineServerId: {deviation['MinEngineServerId']}, Total Vulnerabilities: {deviation['MinTotalVulnerabilities']}]\n  - Max Scan ID: {deviation['MaxScanID']} [Duration: {deviation['MaxDuration']}, LOC: {deviation['MaxScanLOC']}, EngineServerId: {deviation['MaxEngineServerId']}, Total Vulnerabilities: {deviation['MaxTotalVulnerabilities']}]\n  - % Delta: {deviation['PercentageDifference']}%\n  - Scan Type: {deviation['ScanType']}\n")
 
     print(f"{len(deviations)} deviations in {total_projects} projects using minimum deviation time of {args.min_deviation_time} and minimum deviation percentage of {args.min_deviation_percentage}%\n")
-
-if __name__ == "__main__":
-    main()

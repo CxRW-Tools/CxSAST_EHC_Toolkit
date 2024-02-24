@@ -43,7 +43,7 @@ def split_scans(file_path):
 
     return part1, part2, part3
 
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Split scans into three parts based on dates.')
     parser.add_argument('input_file', type=str, help='Input JSON file with scan data.')
     args = parser.parse_args()
@@ -67,6 +67,3 @@ def main():
         json.dump({"value": part3}, file)
 
     print(f"Output written to:\n{output_filename1}\n{output_filename2}\n{output_filename3}")
-
-if __name__ == "__main__":
-    main()
