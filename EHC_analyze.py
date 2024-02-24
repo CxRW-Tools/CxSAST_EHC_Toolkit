@@ -1,12 +1,10 @@
 import argparse
 import os
 import ijson
-import sys
 from datetime import datetime
 from dateutil.parser import parse as parse_date
-import time
 import math
-import pprint
+import csv
 
 try:
     from tqdm import tqdm
@@ -14,6 +12,12 @@ try:
 except ImportError:
     tqdm_available = False
     print("Consider installing tqdm for progress bar: 'pip install tqdm'")
+
+#import time
+#import sys
+
+## for debugging only
+import pprint
 
 
 
@@ -37,6 +41,7 @@ def calculate_time_difference(t1, t2):
 
 
 
+# Process the scan data.
 # One single function will be more efficient but start to get messy. Brace youreself.
 def process_scans(scans):
 
@@ -332,8 +337,9 @@ def format_seconds_to_hms(seconds):
     return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
 
 
-
-def print_summary(data):
+# Output to the screen as well as create very specific CSVs.
+# One single function for simplification / variable reuse (but a bit messy, as well).
+def output_analysis(data, concurrency_config, csv_config):
 
     total_scan_count = yes_scan_count = no_scan_count = full_scan_count = incremental_scan_count = date_max_scan_count = 0
     scan_loc__sum = scan_loc__max = scan_failed_loc__sum = scan_failed_loc__max = date_loc__max = 0
@@ -353,7 +359,7 @@ def print_summary(data):
         'Weekend': 0
     }
 
-    # unpack scan stats and crunch numbers
+    # unpack scan stats and crunch a few more numbers
     for scan_date, stats in data['scan_stats_by_date'].items():
         full_scan_count += stats['full_scan_count']
         incremental_scan_count += stats['incremental_scan_count']
@@ -383,28 +389,7 @@ def print_summary(data):
     total_days = (data['last_date'] - data['first_date']).days
     total_weeks = math.ceil(total_days / 7)
     total_scan_days = len(data['scan_stats_by_date'])
-
-    print(f"\nSummary of Scans ({data['first_date']} to {data['last_date']})")
-    print("-" * 50)
-    print(f"Total number of scans: {format(total_scan_count, ',')}")
-    print(f"- Full Scans: {format(full_scan_count, ',')} ({(full_scan_count / total_scan_count) * 100:.1f}%)")
-    print(f"- Incremental Scans: {format(incremental_scan_count, ',')} ({(incremental_scan_count / total_scan_count) * 100:.1f}%)")
-    print(f"- No Code Change Scans: {format(no_scan_count, ',')} ({(no_scan_count / total_scan_count) * 100:.1f}%)")
-    print(f"- Scans with High Results: {format(high_results__scan_count, ',')} ({(high_results__scan_count / total_scan_count) * 100:.1f}%)")
-    print(f"- Scans with Medium Results: {format(medium_results__scan_count, ',')} ({(medium_results__scan_count / total_scan_count) * 100:.1f}%)")
-    print(f"- Scans with Low Results: {format(low_results__scan_count, ',')} ({(low_results__scan_count / total_scan_count) * 100:.1f}%)")
-    print(f"- Scans with Informational Results: {format(info_results__scan_count, ',')} ({(info_results__scan_count / total_scan_count) * 100:.1f}%)")
-    print(f"- Scans with Zero Results: {format(zero_results__scan_count, ',')} ({(zero_results__scan_count / total_scan_count) * 100:.1f}%)")
-    print(f"- Unique Projects Scanned: {format(len(data['scanned_projects']), ',')}")
-    
-    print("\nScan Metrics")
-    print(f"- Avg LOC per Scan: {format(round(scan_loc__sum / total_scan_count), ',')}")
-    print(f"- Max LOC per Scan:  {format(round(scan_loc__max), ',')}")
-    print(f"- Avg Failed LOC per Scan: {format(round(scan_failed_loc__sum / yes_scan_count), ',')}")
-    print(f"- Max Failed LOC per Scan:  {format(round(scan_failed_loc__max), ',')}")
-    print(f"- Avg Daily LOC: {format(round(scan_loc__sum / total_scan_days), ',')}")
-    print(f"- Max Daily LOC: {format(round(date_loc__max), ',')}")
-
+            
     # Iterate through the size_bins dictionary to calculate avg and max durations (overall)
     for bin_key, bin_values in data['size_bins'].items():
         total_scan_time__sum += bin_values['total_scan_time__sum']
@@ -420,6 +405,86 @@ def print_summary(data):
     queue_time__avg = queue_time__sum / yes_scan_count
     engine_scan_time__avg = engine_scan_time__sum / yes_scan_count
 
+    # Prepare to output files, if required
+    if csv_config['enabled']:
+        try:
+            # Attempt to create the directory
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            csv_dir = os.path.join(os.getcwd(), f"ehc_output_{csv_config['filename_base']}_{timestamp}")
+            os.makedirs(csv_dir, exist_ok=True)
+        except PermissionError as e:
+            print(f"Permission Error: {e}")
+            return
+        except Exception as e:
+            print(f"Error creating directory: {e}")
+            return
+
+    # Print Summary of Scans
+    print(f"\nSummary of Scans ({data['first_date']} to {data['last_date']})")
+    print("-" * 50)
+    print(f"Total number of scans: {format(total_scan_count, ',')}")
+    print(f"- Full Scans: {format(full_scan_count, ',')} ({(full_scan_count / total_scan_count) * 100:.1f}%)")
+    print(f"- Incremental Scans: {format(incremental_scan_count, ',')} ({(incremental_scan_count / total_scan_count) * 100:.1f}%)")
+    print(f"- No Code Change Scans: {format(no_scan_count, ',')} ({(no_scan_count / total_scan_count) * 100:.1f}%)")
+    print(f"- Scans with High Results: {format(high_results__scan_count, ',')} ({(high_results__scan_count / total_scan_count) * 100:.1f}%)")
+    print(f"- Scans with Medium Results: {format(medium_results__scan_count, ',')} ({(medium_results__scan_count / total_scan_count) * 100:.1f}%)")
+    print(f"- Scans with Low Results: {format(low_results__scan_count, ',')} ({(low_results__scan_count / total_scan_count) * 100:.1f}%)")
+    print(f"- Scans with Informational Results: {format(info_results__scan_count, ',')} ({(info_results__scan_count / total_scan_count) * 100:.1f}%)")
+    print(f"- Scans with Zero Results: {format(zero_results__scan_count, ',')} ({(zero_results__scan_count / total_scan_count) * 100:.1f}%)")
+    print(f"- Unique Projects Scanned: {format(len(data['scanned_projects']), ',')}")
+    
+    # Create output file, if required
+    if csv_config['enabled']:
+        try:
+            filename = os.path.join(csv_dir, f"summary_of_scans.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Description','Value', '%'])
+                writer.writerow(['Start Date',data['first_date']])
+                writer.writerow(['End Date',data['last_date']])
+                writer.writerow(['Days',total_days])
+                writer.writerow(['Weeks',total_weeks])
+                writer.writerow(['Scans Submitted',total_scan_count])
+                writer.writerow(['Full Scans Submitted',full_scan_count,(full_scan_count / total_scan_count)])
+                writer.writerow(['Incremental Scans Submitted',incremental_scan_count,(incremental_scan_count / total_scan_count)])
+                writer.writerow(['No-Change Scans',no_scan_count,(no_scan_count / total_scan_count)])
+                writer.writerow(['Scans with High Results',high_results__scan_count,(high_results__scan_count / total_scan_count)])
+                writer.writerow(['Scans with Medium Results',medium_results__scan_count,(medium_results__scan_count / total_scan_count)])
+                writer.writerow(['Scans with Low Results',low_results__scan_count,(low_results__scan_count / total_scan_count)])
+                writer.writerow(['Scans with Informational Results',info_results__scan_count,(info_results__scan_count / total_scan_count)])
+                writer.writerow(['Scans with Zero Results',zero_results__scan_count,(zero_results__scan_count / total_scan_count)])
+                writer.writerow(['Unique Projects Scanned',len(data['scanned_projects'])])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
+
+
+    # Print Scan Metrics
+    print("\nScan Metrics")
+    print(f"- Avg LOC per Scan: {format(round(scan_loc__sum / total_scan_count), ',')}")
+    print(f"- Max LOC per Scan:  {format(round(scan_loc__max), ',')}")
+    print(f"- Avg Failed LOC per Scan: {format(round(scan_failed_loc__sum / yes_scan_count), ',')}")
+    print(f"- Max Failed LOC per Scan:  {format(round(scan_failed_loc__max), ',')}")
+    print(f"- Avg Daily LOC: {format(round(scan_loc__sum / total_scan_days), ',')}")
+    print(f"- Max Daily LOC: {format(round(date_loc__max), ',')}")
+    
+    # Create output file, if required
+    if csv_config['enabled']:
+        try:
+            filename = os.path.join(csv_dir, f"scan_metrics.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Description','Average', 'Max'])
+                writer.writerow(['LOC per Scan',round(scan_loc__sum / total_scan_count),round(scan_loc__max)])
+                writer.writerow(['Failed LOC per Scan',round(scan_failed_loc__sum / yes_scan_count),round(scan_failed_loc__max)])
+                writer.writerow(['Daily LOC',round(scan_loc__sum / total_scan_days),round(date_loc__max)])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
+
+    # Print Scan Duration
     print("\nScan Duration")
     print(f"- Avg Total Scan Duration: {format_seconds_to_hms(total_scan_time__avg)}")
     print(f"- Max Total Scan Duration: {format_seconds_to_hms(total_scan_time__max)}")
@@ -429,7 +494,24 @@ def print_summary(data):
     print(f"- Max Queued Scan Duration: {format_seconds_to_hms(queue_time__max)}")
     print(f"- Avg Source Pulling Duration: {format_seconds_to_hms(source_pulling_time__avg)}")
     print(f"- Max Source Pulling Duration: {format_seconds_to_hms(source_pulling_time__max)}")
-    
+
+    # Create output file, if required
+    if csv_config['enabled']:
+        try:
+            filename = os.path.join(csv_dir, f"scan_duration.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Description','Average', 'Max'])
+                writer.writerow(['Total Scan Duration',format_seconds_to_hms(total_scan_time__avg),format_seconds_to_hms(total_scan_time__max)])
+                writer.writerow(['Engine Scan Duration',format_seconds_to_hms(engine_scan_time__avg),format_seconds_to_hms(engine_scan_time__max)])
+                writer.writerow(['Queued Duration',format_seconds_to_hms(queue_time__avg),format_seconds_to_hms(queue_time__max)])
+                writer.writerow(['Source Pulling Duration',format_seconds_to_hms(source_pulling_time__avg),format_seconds_to_hms(source_pulling_time__max)])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
+
+    # Print Scan Results / Severity
     print("\nScan Results / Severity")
     print(f"- Average Total Results: {data['results']['total_vulns__avg']}")
     print(f"- Max Total Results: {data['results']['total_vulns__max']}")
@@ -442,38 +524,140 @@ def print_summary(data):
     print(f"- Average Informational Results: {data['results']['info__avg']}")
     print(f"- Max Informational Results: {data['results']['info__max']}")
 
+    # Create output file, if required
+    if csv_config['enabled']:
+        try:
+            filename = os.path.join(csv_dir, f"scan_results_severity.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Description','Average', 'Max'])
+                writer.writerow(['Total',data['results']['total_vulns__avg'],data['results']['total_vulns__max']])
+                writer.writerow(['High',data['results']['high__avg'],data['results']['high__max']])
+                writer.writerow(['Medium',data['results']['medium__avg'],data['results']['medium__max']])
+                writer.writerow(['Low',data['results']['low__avg'],data['results']['low__max']])
+                writer.writerow(['Informational',data['results']['info__avg'],data['results']['info__max']])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
+    
+    # Print Languages
     print("\nLanguages")
     for language_name, language_count in sorted(data['scanned_languages'].items(), key=lambda x: x[1], reverse=True):
         percentage = (language_count / total_scan_count) * 100
         print(f"- {language_name}: {format(language_count, ',')} ({percentage:.1f}%)")
+    
+    # Create output file, if required
+    if csv_config['enabled']:
+        try:
+            filename = os.path.join(csv_dir, f"languages.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Language','%', 'Scans'])
+                for language_name, language_count in sorted(data['scanned_languages'].items(), key=lambda x: x[1], reverse=True):
+                    percentage = language_count / total_scan_count
+                    writer.writerow([language_name,percentage,language_count])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
 
+    # Print Scan Submission Summary
     print("\nScan Submission Summary")
     print(f"- Average Scans Submitted per Week: {format(round(total_scan_count / total_weeks), ',')}")
     print(f"- Average Scans Submitted per Day: {format(round(total_scan_count / total_days), ',')}")
-    print(f"- nAverage Scans Submitted per Week Day: {format(round(weekly_scan_totals['Weekday'] / (total_weeks * 5)), ',')}")
+    print(f"- Average Scans Submitted per Week Day: {format(round(weekly_scan_totals['Weekday'] / (total_weeks * 5)), ',')}")
     print(f"- Average Scans Submitted per Weekend Day: {format(round(weekly_scan_totals['Weekend'] / (total_weeks * 2)), ',')}")
     print(f"- Max Daily Scans Submitted: {format(date_max_scan_count, ',')}")
     print(f"- Date of Max Scans: {date_max_scan_date}")
 
+    # Create output file, if required
+    if csv_config['enabled']:
+        try:
+            filename = os.path.join(csv_dir, f"scan_submissison_summary.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Description','Value'])
+                writer.writerow(['Average Scans Submitted per Week',round(total_scan_count / total_weeks)])
+                writer.writerow(['Average Scans Submitted per Day',round(total_scan_count / total_days)])
+                writer.writerow(['Average Scans Submitted per Weekday',round(weekly_scan_totals['Weekday'] / (total_weeks * 5))])
+                writer.writerow(['Average Scans Submitted per Weekend Day',round(weekly_scan_totals['Weekend'] / (total_weeks * 2))])
+                writer.writerow(['Max Daily Scans Submitted',date_max_scan_count])
+                writer.writerow(['Date of Max Scans',date_max_scan_date])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
+
+    # Print Day of Week Scan Average
     print("\nDay of Week Scan Average")
     for day_name, total_day_count in weekly_scan_totals.items():
         if day_name == "Weekday" or day_name == "Weekend":
             continue
-        percentage = (total_day_count / total_scan_count) * 100
+        percentage = (total_day_count / total_scan_count)
         print(f"- {day_name}: {format(round(total_day_count / total_weeks), ',')} ({percentage:.1f}%)")
 
-    print("\nOrigin")
-    for origin, count in sorted(data['origins'].items(), key=lambda x: x[1], reverse=True):
-        percentage = (count / total_scan_count) * 100
-        print(f"- {origin}: {format(count, ',')} ({percentage:.1f}%)")
+    # Create output file, if required
+    if csv_config['enabled']:
+        try:
+            filename = os.path.join(csv_dir, f"day_of_week_scan_average.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Day of Week', 'Scans', '%'])
+                for day_name, total_day_count in weekly_scan_totals.items():
+                    if day_name == "Weekday" or day_name == "Weekend":
+                        continue
+                    percentage = (total_day_count / total_scan_count)
+                    writer.writerow([day_name,round(total_day_count / total_weeks),percentage])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
 
+    # Print Origins
+    print("\nOrigins")
+    for origin, origin_count in sorted(data['origins'].items(), key=lambda x: x[1], reverse=True):
+        percentage = (origin_count / total_scan_count)
+        print(f"- {origin}: {format(origin_count, ',')} ({percentage:.1f}%)")
+
+    # Create output file, if required
+    if csv_config['enabled']:
+        try:
+            filename = os.path.join(csv_dir, f"origins.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Origin', 'Scans', '%'])
+                for origin, origin_count in sorted(data['origins'].items(), key=lambda x: x[1], reverse=True):
+                    percentage = (origin_count / total_scan_count)
+                    writer.writerow([origin,origin_count,percentage])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
+
+    # Print Presets
     print("\nPresets")
     for preset_name, preset_count in sorted(data['preset_names'].items(), key=lambda x: x[1], reverse=True):
-        percentage = (preset_count / total_scan_count) * 100
+        percentage = (preset_count / total_scan_count)
         print(f"- {preset_name}: {format(preset_count, ',')} ({percentage:.1f}%)")
 
-    print("\nScan Time Analysis")
+    # Create output file, if required
+    if csv_config['enabled']:
+        try:
+            filename = os.path.join(csv_dir, f"presets.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Preset', 'Scans', '%'])
+                for preset_name, preset_count in sorted(data['preset_names'].items(), key=lambda x: x[1], reverse=True):
+                    percentage = (preset_count / total_scan_count)
+                    writer.writerow([preset_name,preset_count,percentage])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
 
+    # Print Scan Time Analysis
+    print("\nScan Time Analysis")
     # Print the header of the table
     print(f"{'LOC Range':<12} {'Scans':<12} {'% Scans':<10} {'Avg Total Time':<18} {'Avg Source Pull':<18} {'Avg Queue':<18} "
     f"{'Avg Engine':<18}")
@@ -491,27 +675,59 @@ def print_summary(data):
         f"{(math.ceil((10000 * (bin_values['yes_scan_count'] + bin_values['no_scan_count']) / total_scan_count)) / 100):<11.2f}"
         f"{total_scan_time__avg:<18} {source_pulling_time__avg:<18} {queue_time__avg:<18} {engine_scan_time__avg:<18}")
 
-
-def generate_csvs(data, basename):
-    print("")
-
-
+    # Create output file, if required
+    if csv_config['enabled']:
+        try:
+            filename = os.path.join(csv_dir, f"scan_time_analysis.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['LOC Range','Scans','% Scans','Avg Total Time','Avg Source Pull','Avg Queue','Avg Engine'])
+                
+                # Iterate through the size_bins dictionary to print the per-bin data
+                for bin_key, bin_values in data['size_bins'].items():
+                    # Format times from seconds to HH:MM:SS
+                    source_pulling_time__avg = format_seconds_to_hms(bin_values['source_pulling_time__avg'])
+                    queue_time__avg = format_seconds_to_hms(bin_values['queue_time__avg'])
+                    engine_scan_time__avg = format_seconds_to_hms(bin_values['engine_scan_time__avg'])
+                    total_scan_time__avg = format_seconds_to_hms(bin_values['total_scan_time__avg'])
+                    writer.writerow([bin_key,bin_values['yes_scan_count'] + bin_values['no_scan_count'],
+                        math.ceil((10000 * (bin_values['yes_scan_count'] + bin_values['no_scan_count']) / total_scan_count)) / 10000,
+                        total_scan_time__avg,source_pulling_time__avg,queue_time__avg,engine_scan_time__avg])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process scans and output CSV files if requested.")
-    parser.add_argument("input_file", help="The JSON file containing scan data.")
+    parser.add_argument("input_file", type=str, default="", help="The JSON file containing scan data.")
     parser.add_argument("--csv", action="store_true", help="Generate CSV output files.")
-    
+    parser.add_argument('--concurrency', action='store_true', help='Enable concurrency analysis. Note that this is time-consuming.')
+    parser.add_argument('--window', type=int, default=None, help='Concurrency window size in days (optional, requires --concurrency).')
+    parser.add_argument('--snapshot', type=int, default=None, help='Concurrency snapshot interval in seconds (optional, requires --concurrency).')
+
     args = parser.parse_args()
+
+    # Validate --window and --snapshot usage
+    if not args.concurrency:
+        if args.window is not None or args.snapshot is not None:
+            parser.error('--window and --snapshot require --concurrency.')
+
     input_file = args.input_file
+
+    concurrency_config = {
+        'enabled': args.concurrency,
+        'window_days': args.window if args.window is not None else 30,
+        'snapshot_seconds': args.snapshot if args.snapshot is not None else 10
+    }
+
+    csv_config = {
+        'enabled': args.csv,
+        'filename_base': os.path.splitext(os.path.basename(input_file))[0]
+    }
 
     scans = ingest_file(input_file)
 
-    data = process_scans(scans)
+    processed_data = process_scans(scans)
 
-    print_summary(data)
-
-    print("")
-
-    if args.csv:
-        generate_csvs(data, os.path.splitext(os.path.basename(input_file))[0])
+    output_analysis(processed_data, concurrency_config, csv_config)
