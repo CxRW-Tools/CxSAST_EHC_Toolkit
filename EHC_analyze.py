@@ -1,8 +1,10 @@
 import argparse
 import os
+import re
 import ijson
-from datetime import datetime
+from datetime import datetime, timedelta
 from dateutil.parser import parse as parse_date
+from collections import defaultdict
 import math
 import csv
 
@@ -19,17 +21,34 @@ except ImportError:
 ## for debugging only
 import pprint
 
+# Global variable(s)
+cc_snapshot_seconds = 1 # the size of concurrency snapshots in seconds
+
 
 
 def ingest_file(file_path):
     print("Reading data file...", end="", flush=True)
     scans = []
+    tmp_field_names = []
     with open(file_path, 'rb') as file:
+        # Extract field names from the @odata.context string
+        context = ijson.items(file, '@odata.context')
+        context_str = next(context)
+        pattern = r"#Scans\((.*?)\)"
+        match = re.search(pattern, context_str)
+        if match:
+            fields_str = match.group(1)
+            tmp_field_names = [field.strip() for field in fields_str.split(',')]
+            # Adjust the field names here, using tmp_field_names
+            field_names = [field.replace('(LanguageName', '') if 'ScannedLanguages' in field else field for field in tmp_field_names]
+
+        # Reset file pointer and extract scan items
+        file.seek(0)
         for scan in ijson.items(file, 'value.item'):
             scans.append(scan)
-    print("completed!")
-    return scans
 
+    print("completed!")
+    return field_names, scans
 
 
 def calculate_time_difference(t1, t2):
@@ -43,7 +62,7 @@ def calculate_time_difference(t1, t2):
 
 # Process the scan data.
 # One single function will be more efficient but start to get messy. Brace youreself.
-def process_scans(scans):
+def process_scans(scans, full_csv):
 
     # define (most) variables and data structures
 
@@ -134,7 +153,26 @@ def process_scans(scans):
         "total_scan_time__avg": 0, "source_pulling_time__avg": 0, "queue_time__avg": 0, "engine_scan_time__avg": 0}
     }
 
-    # Initialize tqdm object
+    # Variables for concurrency
+    # Event format: (timestamp, change_in_count, event_type)
+    # Snapshot format: (timestamp, active_engines, queue_length)
+    # change_in_count is +1 for starts (entering queue or starting engine) and -1 for ends (leaving queue or engine finishing)
+    # event_type distinguishes between 'queue' and 'engine'
+    cc_events = filtered_cc_events = snapshot_metrics = []
+    
+    # Prepare to output CSV of all scan data and create output file, if required
+    if full_csv['enabled']:
+        try:
+            filename = os.path.join(full_csv['csv_dir'], f"00-full_scan_data.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(full_csv['field_names'])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
+
+    # Initialize tqdm object; we exclude concurrency processing because it's so fast, even for massive data sets
     if tqdm_available:
         pbar = tqdm(total=len(scans), desc="Processing scans")
     else:
@@ -144,8 +182,35 @@ def process_scans(scans):
     for scan in scans:
         if tqdm_available:
             pbar.update(1)
+            pbar.refresh()
         
-        # if there is no LOC value, we might as well just completely skip the scan
+        # If required, we want to output to the full scan CSV first so as to include scans with missing fields (such as loc). This will cause a potential
+        # mismatch between record counts but shouldn't impact anything relating to metrics or analysis. This CSV is only used for manual analysis.
+        if full_csv['enabled']:
+            try:
+                filename = os.path.join(full_csv['csv_dir'], f"00-full_scan_data.csv")
+                with open(filename, mode='a', newline='', encoding='utf-8') as file:
+                    writer = csv.writer(file)
+                    # Build a row by extracting each field from the scan in the order of field_names
+                    row = []
+                    for field in full_csv['field_names']:
+                        if field == 'ScannedLanguages':
+                            # Special handling for ScannedLanguages field to convert list of dicts to comma-separated string
+                            languages = scan.get(field, [])
+                            language_str = ', '.join(lang['LanguageName'] for lang in languages)
+                            row.append(language_str)
+                        else:
+                            # For all other fields, use the value as-is
+                            row.append(scan.get(field, ""))
+                    # Write the constructed row to the CSV file
+                    writer.writerow(row)
+            except IOError as e:
+                print(f"IOError when writing to file: {e}")
+            except Exception as e:
+                print(f"Unexpected error when creating/writing to the CSV file: {e}")
+
+        # If there is no LOC value, we might as well just completely skip the scan.
+        # This differs from the current process but ensures that scan counts actually match in various metrics. Also, other fields are typically also missing.
         loc = scan.get('LOC', None)
         if loc is None:
             continue
@@ -207,11 +272,15 @@ def process_scans(scans):
         else:
             scan_stats_by_date[scan_date]['full_scan_count'] += 1
         
+        # sometimes one of these fields is empty
         project_id = scan.get('ProjectId', 0)
+        project_name = scan.get('ProjectName', "")
+        pid = str(project_id) + "_" + project_name
 
-        if project_id not in scanned_projects:
-            scanned_projects[project_id] = {
-                'project_name': scan.get('ProjectName', ""),
+        if pid not in scanned_projects:
+            scanned_projects[pid] = {
+                'id': project_id,
+                'project_name': project_name,
                 'project_scan_count': 0,
                 'total_vulns_count': 0,
                 'high_count': 0,
@@ -220,12 +289,12 @@ def process_scans(scans):
                 'info_count': 0,
             }
 
-        scanned_projects[project_id]['project_scan_count'] += 1
-        scanned_projects[project_id]['total_vulns_count'] = scan.get('TotalVulnerabilities', 0)
-        scanned_projects[project_id]['high_count'] = scan.get('High', 0)
-        scanned_projects[project_id]['medium_count'] = scan.get('Medium', 0)
-        scanned_projects[project_id]['low_count'] = scan.get('Low', 0)
-        scanned_projects[project_id]['info_count'] = scan.get('Info', 0)
+        scanned_projects[pid]['project_scan_count'] += 1
+        scanned_projects[pid]['total_vulns_count'] = scan.get('TotalVulnerabilities', 0)
+        scanned_projects[pid]['high_count'] = scan.get('High', 0)
+        scanned_projects[pid]['medium_count'] = scan.get('Medium', 0)
+        scanned_projects[pid]['low_count'] = scan.get('Low', 0)
+        scanned_projects[pid]['info_count'] = scan.get('Info', 0)
 
         source_pulling_time = math.ceil(calculate_time_difference(scan.get('ScanRequestedOn'),scan.get('QueuedOn')))
         queue_time = math.ceil(calculate_time_difference(scan.get('QueuedOn'),scan.get('EngineStartedOn')))
@@ -288,6 +357,22 @@ def process_scans(scans):
         origin = scan.get('Origin', 'Unknown')
         origins[origin] = origins.get(origin, 0) + 1
 
+        # parse timestamps for concurrency queueing and engine events
+        queued_on = parse_date(scan['QueuedOn']).timestamp()
+        engine_started_on = parse_date(scan['EngineStartedOn']).timestamp()
+        engine_finished_on = None
+        optimal_scan_finish = None
+
+        cc_events.append((queued_on, +1, 'queue'))
+        cc_events.append((engine_started_on, -1, 'queue'))
+
+        if 'EngineFinishedOn' in scan and scan['EngineFinishedOn'] is not None:
+            engine_finished_on = parse_date(scan['EngineFinishedOn']).timestamp()
+            engine_scan_duration = engine_finished_on - engine_started_on
+            optimal_scan_finish = queued_on + engine_scan_duration  # Calculate based on no queue delay assumption
+            cc_events.append((engine_started_on, +1, 'engine'))
+            cc_events.append((optimal_scan_finish, -1, 'engine'))
+
     # calculate totals and averages
     total_scan_count = yes_scan_count + no_scan_count
     for bin_key, bin in size_bins.items():
@@ -312,11 +397,49 @@ def process_scans(scans):
         grouped_origins[group] += count
     grouped_origins_2 = {origin: count for origin, count in grouped_origins.items() if count > 0}
 
+    # Process concurrency events
+
+    # Initialize variables
+    cc_window_start_ts = datetime.combine(first_date, datetime.min.time()).timestamp()
+    cc_window_end_ts = datetime.combine(last_date, datetime.min.time()).timestamp()
+    num_snapshots = math.ceil((cc_window_end_ts - cc_window_start_ts) / cc_snapshot_seconds)
+
+    # Filter out objects based on the window and sort them
+    filtered_cc_events = [event for event in cc_events if cc_window_start_ts <= event[0] <= cc_window_end_ts]
+    filtered_cc_events.sort(key=lambda x: x[0])
+
+    current_active_engines = 0
+    current_queue_length = 0
+    event_index = 0
+    snapshot_metrics = []
+    
+    # For each snapshot...
+    for snapshot in range(num_snapshots):
+        # Calculate the bounds of the snapshot in timestamp format
+        snapshot_start_ts = cc_window_start_ts + snapshot * cc_snapshot_seconds
+        next_snapshot_start_ts = snapshot_start_ts + cc_snapshot_seconds
+        
+        while event_index < len(filtered_cc_events) and filtered_cc_events[event_index][0] < next_snapshot_start_ts:
+            event_time, change, event_type = filtered_cc_events[event_index]
+            
+            if event_type == 'engine':
+                current_active_engines += change
+            elif event_type == 'queue':
+                current_queue_length += change
+            
+            event_index += 1
+        
+        # Convert snapshot_start_ts to datetime for recording
+        snapshot_start_dt = datetime.fromtimestamp(snapshot_start_ts)
+
+        # Append the metrics for the current snapshot to the list
+        snapshot_metrics.append((snapshot_start_dt, current_active_engines, current_queue_length))
+
     if tqdm_available:
         pbar.close()
     else:
             print("completed!")
-    
+
     return {
         'first_date': first_date,
         'last_date': last_date,
@@ -326,7 +449,8 @@ def process_scans(scans):
         'results': results,
         'preset_names': preset_names,
         'scanned_languages': scanned_languages,
-        'origins': grouped_origins_2
+        'origins': grouped_origins_2,
+        'cc_metrics': snapshot_metrics
     }
 
 
@@ -340,7 +464,7 @@ def format_seconds_to_hms(seconds):
 
 # Output to the screen as well as create very specific CSVs.
 # One single function for simplification / variable reuse (but a bit messy, as well).
-def output_analysis(data, concurrency_config, csv_config):
+def output_analysis(data, csv_config):
 
     total_scan_count = yes_scan_count = no_scan_count = full_scan_count = incremental_scan_count = date_max_scan_count = 0
     scan_loc__sum = scan_loc__max = scan_failed_loc__sum = scan_failed_loc__max = date_loc__max = 0
@@ -348,7 +472,7 @@ def output_analysis(data, concurrency_config, csv_config):
     total_scan_time__max = source_pulling_time__max = queue_time__max = engine_scan_time__max = 0
     total_scan_time__avg = source_pulling_time__avg = queue_time__avg = engine_scan_time__avg = 0
     
-    weekly_scan_totals = {
+    day_of_week_scan_totals = {
         'Monday': 0,
         'Tuesday': 0,
         'Wednesday': 0,
@@ -360,6 +484,10 @@ def output_analysis(data, concurrency_config, csv_config):
         'Weekend': 0
     }
 
+    daily_scan_counts = {}
+    weekly_scan_counts = {}
+
+
     # unpack scan stats and crunch a few more numbers
     for scan_date, stats in data['scan_stats_by_date'].items():
         full_scan_count += stats['full_scan_count']
@@ -370,17 +498,32 @@ def output_analysis(data, concurrency_config, csv_config):
         scan_loc__max = max(scan_loc__max, stats['loc__max'])
         scan_failed_loc__sum += stats['failed_loc__sum']
         scan_failed_loc__max = max(scan_failed_loc__max, stats['failed_loc__max'])
+        daily_scan_counts[scan_date] = stats['total_scan_count']
+        
+        # Calculate the Monday of the current week
+        monday_of_week = scan_date - timedelta(days=scan_date.weekday())
+        
+        # Add the count for the current week
+        if monday_of_week not in weekly_scan_counts:
+            weekly_scan_counts[monday_of_week] = stats['total_scan_count']
+        else:
+            weekly_scan_counts[monday_of_week] += stats['total_scan_count']
+        
         date_loc__max = max(date_loc__max, stats['loc__sum'])
+        
         if(stats['total_scan_count'] > date_max_scan_count):
             date_max_scan_count = stats['total_scan_count']
             date_max_scan_date = scan_date
+       
         day_name = scan_date.strftime('%A')
         day_index = scan_date.weekday()
-        weekly_scan_totals[day_name] += stats['total_scan_count']
+        day_of_week_scan_totals[day_name] += stats['total_scan_count']
+
         if day_index >= 5:  # Saturday or Sunday
-            weekly_scan_totals['Weekend'] += stats['total_scan_count']
+            day_of_week_scan_totals['Weekend'] += stats['total_scan_count']
         else:
-            weekly_scan_totals['Weekday'] += stats['total_scan_count']
+            day_of_week_scan_totals['Weekday'] += stats['total_scan_count']
+
     total_scan_count = yes_scan_count + no_scan_count
     high_results__scan_count = data['results']['high_results__scan_count']
     medium_results__scan_count = data['results']['medium_results__scan_count']
@@ -405,20 +548,36 @@ def output_analysis(data, concurrency_config, csv_config):
     source_pulling_time__avg = source_pulling_time__sum / yes_scan_count
     queue_time__avg = queue_time__sum / yes_scan_count
     engine_scan_time__avg = engine_scan_time__sum / yes_scan_count
+    
+    # Identify daily max concurrency values based on the granular calculations made previously
+    daily_maxima = defaultdict(lambda: {'actual': 0, 'optimal': 0})
+    overall_max_actual = 0
+    overall_max_optimal = 0
+    overall_max_actual_dates = set()
+    overall_max_optimal_dates = set()
 
-    # Prepare to output files, if required
-    if csv_config['enabled']:
-        try:
-            # Attempt to create the directory
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            csv_dir = os.path.join(os.getcwd(), f"ehc_output_{csv_config['filename_base']}_{timestamp}")
-            os.makedirs(csv_dir, exist_ok=True)
-        except PermissionError as e:
-            print(f"Permission Error: {e}")
-            return
-        except Exception as e:
-            print(f"Error creating directory: {e}")
-            return
+    for snapshot in data['cc_metrics']:
+        snapshot_dt, active_engines, queue_length = snapshot
+        snapshot_date = snapshot_dt.date()
+        optimal_concurrency = active_engines + queue_length
+
+        # Update daily maximums
+        daily_record = daily_maxima[snapshot_date]
+        daily_record['actual'] = max(daily_record['actual'], active_engines)
+        daily_record['optimal'] = max(daily_record['optimal'], optimal_concurrency)
+
+        # Update overall maximums and their dates
+        if daily_record['actual'] > overall_max_actual:
+            overall_max_actual = daily_record['actual']
+            overall_max_actual_dates = {snapshot_date}
+        elif daily_record['actual'] == overall_max_actual:
+            overall_max_actual_dates.add(snapshot_date)
+
+        if daily_record['optimal'] > overall_max_optimal:
+            overall_max_optimal = daily_record['optimal']
+            overall_max_optimal_dates = {snapshot_date}
+        elif daily_record['optimal'] == overall_max_optimal:
+            overall_max_optimal_dates.add(snapshot_date)
 
     # Print Summary of Scans
     print(f"\nSummary of Scans ({data['first_date']} to {data['last_date']})")
@@ -437,7 +596,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"01-summary_of_scans.csv")
+            filename = os.path.join(csv_config['csv_dir'], f"01-summary_of_scans.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Description','Value', '%'])
@@ -473,7 +632,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"02-scan_metrics.csv")
+            filename = os.path.join(csv_config['csv_dir'], f"02-scan_metrics.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Description','Average', 'Max'])
@@ -499,7 +658,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"03-scan_duration.csv")
+            filename = os.path.join(csv_config['csv_dir'], f"03-scan_duration.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Description','Average', 'Max'])
@@ -528,7 +687,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"04-scan_results_severity.csv")
+            filename = os.path.join(csv_config['csv_dir'], f"04-scan_results_severity.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Description','Average', 'Max'])
@@ -551,7 +710,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"05-languages.csv")
+            filename = os.path.join(csv_config['csv_dir'], f"05-languages.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Language','%', 'Scans'])
@@ -567,22 +726,22 @@ def output_analysis(data, concurrency_config, csv_config):
     print("\nScan Submission Summary")
     print(f"- Average Scans Submitted per Week: {format(round(total_scan_count / total_weeks), ',')}")
     print(f"- Average Scans Submitted per Day: {format(round(total_scan_count / total_days), ',')}")
-    print(f"- Average Scans Submitted per Week Day: {format(round(weekly_scan_totals['Weekday'] / (total_weeks * 5)), ',')}")
-    print(f"- Average Scans Submitted per Weekend Day: {format(round(weekly_scan_totals['Weekend'] / (total_weeks * 2)), ',')}")
+    print(f"- Average Scans Submitted per Week Day: {format(round(day_of_week_scan_totals['Weekday'] / (total_weeks * 5)), ',')}")
+    print(f"- Average Scans Submitted per Weekend Day: {format(round(day_of_week_scan_totals['Weekend'] / (total_weeks * 2)), ',')}")
     print(f"- Max Daily Scans Submitted: {format(date_max_scan_count, ',')}")
     print(f"- Date of Max Scans: {date_max_scan_date}")
 
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"06-scan_submissison_summary.csv")
+            filename = os.path.join(csv_config['csv_dir'], f"06-scan_submissison_summary.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Description','Value'])
                 writer.writerow(['Average Scans Submitted per Week',round(total_scan_count / total_weeks)])
                 writer.writerow(['Average Scans Submitted per Day',round(total_scan_count / total_days)])
-                writer.writerow(['Average Scans Submitted per Weekday',round(weekly_scan_totals['Weekday'] / (total_weeks * 5))])
-                writer.writerow(['Average Scans Submitted per Weekend Day',round(weekly_scan_totals['Weekend'] / (total_weeks * 2))])
+                writer.writerow(['Average Scans Submitted per Weekday',round(day_of_week_scan_totals['Weekday'] / (total_weeks * 5))])
+                writer.writerow(['Average Scans Submitted per Weekend Day',round(day_of_week_scan_totals['Weekend'] / (total_weeks * 2))])
                 writer.writerow(['Max Daily Scans Submitted',date_max_scan_count])
                 writer.writerow(['Date of Max Scans',date_max_scan_date])
         except IOError as e:
@@ -592,20 +751,20 @@ def output_analysis(data, concurrency_config, csv_config):
 
     # Print Day of Week Scan Average
     print("\nDay of Week Scan Average")
-    for day_name, total_day_count in weekly_scan_totals.items():
+    for day_name, total_day_count in day_of_week_scan_totals.items():
         if day_name == "Weekday" or day_name == "Weekend":
             continue
-        percentage = (total_day_count / total_scan_count)
+        percentage = (total_day_count / total_scan_count) * 100
         print(f"- {day_name}: {format(round(total_day_count / total_weeks), ',')} ({percentage:.1f}%)")
 
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"07-day_of_week_scan_average.csv")
+            filename = os.path.join(csv_config['csv_dir'], f"07-day_of_week_scan_average.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Day of Week', 'Scans', '%'])
-                for day_name, total_day_count in weekly_scan_totals.items():
+                for day_name, total_day_count in day_of_week_scan_totals.items():
                     if day_name == "Weekday" or day_name == "Weekend":
                         continue
                     percentage = (total_day_count / total_scan_count)
@@ -618,13 +777,13 @@ def output_analysis(data, concurrency_config, csv_config):
     # Print Origins
     print("\nOrigins")
     for origin, origin_count in sorted(data['origins'].items(), key=lambda x: x[1], reverse=True):
-        percentage = (origin_count / total_scan_count)
+        percentage = (origin_count / total_scan_count) * 100
         print(f"- {origin}: {format(origin_count, ',')} ({percentage:.1f}%)")
 
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"08-origins.csv")
+            filename = os.path.join(csv_config['csv_dir'], f"08-origins.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Origin', 'Scans', '%'])
@@ -639,13 +798,13 @@ def output_analysis(data, concurrency_config, csv_config):
     # Print Presets
     print("\nPresets")
     for preset_name, preset_count in sorted(data['preset_names'].items(), key=lambda x: x[1], reverse=True):
-        percentage = (preset_count / total_scan_count)
+        percentage = (preset_count / total_scan_count) * 100
         print(f"- {preset_name}: {format(preset_count, ',')} ({percentage:.1f}%)")
 
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"09-presets.csv")
+            filename = os.path.join(csv_config['csv_dir'], f"09-presets.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Preset', 'Scans', '%'])
@@ -679,7 +838,7 @@ def output_analysis(data, concurrency_config, csv_config):
     # Create output file, if required
     if csv_config['enabled']:
         try:
-            filename = os.path.join(csv_dir, f"10-scan_time_analysis.csv")
+            filename = os.path.join(csv_config['csv_dir'], f"10-scan_time_analysis.csv")
             with open(filename, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['LOC Range','Scans','% Scans','Avg Total Time','Avg Source Pulling Time','Avg Queue Time','Avg Engine Scan Time'])
@@ -698,37 +857,99 @@ def output_analysis(data, concurrency_config, csv_config):
             print(f"IOError when writing to file: {e}")
         except Exception as e:
             print(f"Unexpected error when creating/writing to the CSV file: {e}")
+    
+    # Print Concurrency Summary with unique and sorted dates
+    print("\nConcurrency Summary")
+    print(f"- Overall Peak Actual Concurrency: {overall_max_actual} concurrent scans on {', '.join(map(str, overall_max_actual_dates))}")
+    print(f"- Overall Peak Optimal Concurrency: {overall_max_optimal} concurrent scans on {', '.join(map(str, overall_max_optimal_dates))}")
+
+    # Create output file, if required
+    if csv_config['enabled']:
+        try:
+            filename = os.path.join(csv_config['csv_dir'], f"11-concurrency_analysis.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Date', 'Max Actual', 'Max Optimal'])
+                for date, maxima in sorted(daily_maxima.items()):
+                    writer.writerow([date, maxima['actual'], maxima['optimal']])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
+
+    # Create other output files for data that we don't print to the summary, if required
+    if csv_config['enabled']:
+        # Daily scan counts
+        try:
+            filename = os.path.join(csv_config['csv_dir'], f"12-scans_by_date.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Date', 'Scans'])
+                for date, count in sorted(daily_scan_counts.items()):
+                    writer.writerow([date, count])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
+
+        # Weekly scan counts
+        try:
+            filename = os.path.join(csv_config['csv_dir'], f"13-scans_by_week.csv")
+            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Week', 'Scans'])
+                for week, count in sorted(weekly_scan_counts.items()):
+                    writer.writerow([week, count])
+        except IOError as e:
+            print(f"IOError when writing to file: {e}")
+        except Exception as e:
+            print(f"Unexpected error when creating/writing to the CSV file: {e}")
+
+
+    print("")
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process scans and output CSV files if requested.")
-    parser.add_argument("input_file", type=str, default="", help="The JSON file containing scan data.")
+    parser.add_argument("input_file", type=str, help="The JSON file containing scan data.")
     parser.add_argument("--csv", action="store_true", help="Generate CSV output files.")
-    parser.add_argument('--concurrency', action='store_true', help='Enable concurrency analysis. Note that this is time-consuming.')
-    parser.add_argument('--window', type=int, default=None, help='Concurrency window size in days (optional, requires --concurrency).')
-    parser.add_argument('--snapshot', type=int, default=None, help='Concurrency snapshot interval in seconds (optional, requires --concurrency).')
+    parser.add_argument("--full_data", action="store_true", help="Generate CSV output of complete scan data.")
+    parser.add_argument("--name", type=str, default="", help="Optional name for the output directory")
 
     args = parser.parse_args()
-
-    # Validate --window and --snapshot usage
-    if not args.concurrency:
-        if args.window is not None or args.snapshot is not None:
-            parser.error('--window and --snapshot require --concurrency.')
-
     input_file = args.input_file
+    output_name = args.name if args.name else os.path.splitext(os.path.basename(input_file))[0]
 
-    concurrency_config = {
-        'enabled': args.concurrency,
-        'window_days': args.window if args.window is not None else 30,
-        'snapshot_seconds': args.snapshot if args.snapshot is not None else 10
+    # define the output directory using the optional name if provided
+    csv_dir = os.path.join(os.getcwd(), f"ehc_output_{output_name}_{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+
+    # create the output directory if we are creating any CSV files
+    if args.full_data or args.csv:
+        try:
+            # Attempt to create the directory
+            os.makedirs(csv_dir, exist_ok=True)
+
+        except PermissionError as e:
+            print(f"Permission Error: {e}")
+            exit(1)
+        except Exception as e:
+            print(f"Error creating directory: {e}")
+            exit(1)
+
+    field_names, scans = ingest_file(input_file)
+
+    # define structures to hold output info
+    full_csv = {
+        'enabled': args.full_data,
+        'csv_dir': csv_dir,
+        'field_names': field_names
     }
-
     csv_config = {
         'enabled': args.csv,
-        'filename_base': os.path.splitext(os.path.basename(input_file))[0]
+        'csv_dir': csv_dir
     }
 
-    scans = ingest_file(input_file)
+    processed_data = process_scans(scans, full_csv)
 
-    processed_data = process_scans(scans)
-
-    output_analysis(processed_data, concurrency_config, csv_config)
+    output_analysis(processed_data, csv_config)
