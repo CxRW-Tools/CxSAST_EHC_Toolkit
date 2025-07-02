@@ -1,0 +1,6 @@
+# Core dependencies for CxSAST EHC Toolkit
+ijson>=3.1.4
+python-dateutil>=2.8.2
+
+# Optional dependencies for enhanced functionality
+tqdm>=4.64.0

@@ -112,7 +112,7 @@ def find_deviations(scan_data, min_deviation_time_seconds, deviation_percentage,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Find deviations in scan times.')
-    parser.add_argument('json_file', type=str, help='JSON file containing scan data.')
+    parser.add_argument('json-file', type=str, help='JSON file containing scan data.')
     parser.add_argument('--min-deviation-percentage', type=int, default=500, help='Deviation percentage threshold.')
     parser.add_argument('--min-deviation-time', type=str, default='5m', help='Minimum deviation time.')
     parser.add_argument('--csv-export', action='store_true', help='Export to CSV.')

@@ -912,9 +912,9 @@ def output_analysis(data, csv_config):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process scans and output CSV files if requested.")
-    parser.add_argument("input_file", type=str, help="The JSON file containing scan data.")
+    parser.add_argument("input-file", type=str, help="The JSON file containing scan data.")
     parser.add_argument("--csv", action="store_true", help="Generate CSV output files.")
-    parser.add_argument("--full_data", action="store_true", help="Generate CSV output of complete scan data.")
+    parser.add_argument("--full-data", action="store_true", help="Generate CSV output of complete scan data.")
     parser.add_argument("--name", type=str, default="", help="Optional name for the output directory")
 
     args = parser.parse_args()

@@ -18,7 +18,7 @@ def filter_scans(input_file, project_name):
 if __name__ == "__main__":
     # Command line argument parsing
     parser = argparse.ArgumentParser(description="Filter scans by project name.")
-    parser.add_argument("input_file", help="Path to the input JSON file containing scan data.")
+    parser.add_argument("input-file", help="Path to the input JSON file containing scan data.")
     parser.add_argument("--filter-project", required=True, help="Project name to filter the scans by.")
     
     args = parser.parse_args()

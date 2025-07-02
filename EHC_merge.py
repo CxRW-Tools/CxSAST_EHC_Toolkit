@@ -17,8 +17,8 @@ def combine_scans(file_paths):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Combine multiple JSON files into one.')
-    parser.add_argument('input_files', nargs='+', type=str, help='Input JSON files with scan data.')
-    parser.add_argument('output_file', type=str, help='Output JSON file to write combined data.')
+    parser.add_argument('input-files', nargs='+', type=str, help='Input JSON files with scan data.')
+    parser.add_argument('output-file', type=str, help='Output JSON file to write combined data.')
     args = parser.parse_args()
 
     # Combine the scans from the input files

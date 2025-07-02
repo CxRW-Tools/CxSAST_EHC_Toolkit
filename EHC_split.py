@@ -45,7 +45,7 @@ def split_scans(file_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Split scans into three parts based on dates.')
-    parser.add_argument('input_file', type=str, help='Input JSON file with scan data.')
+    parser.add_argument('input-file', type=str, help='Input JSON file with scan data.')
     args = parser.parse_args()
 
     # Split the scans into three parts based on date
